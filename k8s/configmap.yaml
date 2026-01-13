@@ -1,8 +1,0 @@
-# configmap.yaml
-apiVersion: v1
-kind: ConfigMap
-meta
-  name: app-config
-data:
-  REDIS_HOST: redis
-  REDIS_PORT: "6379"

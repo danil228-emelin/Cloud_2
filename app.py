@@ -1,133 +1,116 @@
-from flask import Flask, render_template
-import redis
+
 import os
-import socket
-import time
+from flask import Flask, render_template_string
+import redis
 
 app = Flask(__name__)
 
-# Конфигурация Redis
-redis_host = os.environ.get('REDIS_HOST', 'redis-service')
-redis_port = int(os.environ.get('REDIS_PORT', 6379))
-redis_password = os.environ.get('REDIS_PASSWORD', 'password123')
+
+APP_VERSION = "v2"
+BACKGROUND_COLOR = os.getenv('BACKGROUND_COLOR', 'lightblue')
+
+
+redis_host = os.getenv('REDIS_HOST', 'localhost')
+redis_password = os.getenv('REDIS_PASSWORD', None)  
+
+
+if redis_password:
+    redis_client = redis.Redis(
+        host=redis_host, 
+        port=6379, 
+        password=redis_password,  
+        decode_responses=True,
+        socket_connect_timeout=5
+    )
+else:
+    redis_client = redis.Redis(
+        host=redis_host, 
+        port=6379, 
+        decode_responses=True,
+        socket_connect_timeout=5
+    )
+
+
+def check_redis_connection():
+    try:
+        redis_client.ping()
+        return True
+    except redis.exceptions.AuthenticationError:
+        print("Redis authentication failed")
+        return False
+    except redis.exceptions.ConnectionError:
+        print("Redis connection failed")
+        return False
 
 @app.route('/')
 def index():
-    try:
-        # Подключение к Redis
-        r = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            password=redis_password,
-            decode_responses=True,
-            socket_connect_timeout=2,
-            socket_timeout=2
-        )
-        
-        # Увеличиваем счетчик
-        visits = r.incr('page_visits')
-        redis_status = "✅ Connected"
-        hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
-        
-    except Exception as e:
-        visits = f"Error: {e}"
-        redis_status = "❌ Disconnected"
-        hostname = socket.gethostname()
-        ip = socket.gethostbyname(hostname)
     
-    return f"""
+    if not check_redis_connection():
+        visit_count = "Redis unavailable"
+    else:
+        try:
+            visit_count = redis_client.incr('visit_count')
+        except redis.exceptions.AuthenticationError:
+            return "Redis authentication error. Check REDIS_PASSWORD.", 500
+    
+    
+    html_template = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>K8s Flask + Redis</title>
+        <title>Flask App {{ version }}</title>
         <style>
-            body {{ font-family: Arial; margin: 40px; }}
-            .container {{ max-width: 800px; margin: 0 auto; }}
-            .counter {{ font-size: 48px; color: #2196F3; text-align: center; }}
-            .info {{ background: #f5f5f5; padding: 20px; margin: 20px 0; border-radius: 5px; }}
-            .success {{ color: green; }}
-            .error {{ color: red; }}
+            body {
+                background-color: {{ bg_color }};
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding-top: 50px;
+            }
+            .container {
+                background-color: white;
+                padding: 30px;
+                border-radius: 10px;
+                display: inline-block;
+                box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            }
+            .error {
+                color: red;
+                font-weight: bold;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🚀 Kubernetes + Flask + Redis</h1>
-            <div class="counter">{visits}</div>
-            <p style="text-align: center;">Total visits to this page</p>
-            
-            <div class="info">
-                <h3>📊 Pod Information:</h3>
-                <p><strong>Hostname:</strong> {hostname}</p>
-                <p><strong>IP Address:</strong> {ip}</p>
-                <p><strong>Redis:</strong> <span class="{ 'success' if '✅' in redis_status else 'error' }">{redis_status}</span></p>
-            </div>
-            
-            <div class="info">
-                <h3>🔗 Test Endpoints:</h3>
-                <ul>
-                    <li><a href="/">Refresh Counter</a></li>
-                    <li><a href="/health">Health Check</a></li>
-                    <li><a href="/info">Pod Info</a></li>
-                    <li><a href="/test-redis">Test Redis Connection</a></li>
-                </ul>
-            </div>
-            
-            <p><em>Refresh page to see load balancing between pods</em></p>
+            <h1>🚀 Flask Application</h1>
+            <h2>Version: {{ version }}</h2>
+            <p>Background color: {{ bg_color }}</p>
+            <h3>Visit count: {{ count }}</h3>
+            <p>Pod: {{ pod_name }}</p>
+            <p>Redis Status: {{ redis_status }}</p>
         </div>
     </body>
     </html>
     """
+    
+    redis_status = "Connected" if check_redis_connection() else "Disconnected"
+    
+    return render_template_string(
+        html_template,
+        version=APP_VERSION,
+        bg_color=BACKGROUND_COLOR,
+        count=visit_count,
+        pod_name=os.getenv('HOSTNAME', 'unknown'),
+        redis_status=redis_status
+    )
 
 @app.route('/health')
 def health():
-    try:
-        r = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            password=redis_password,
-            decode_responses=True,
-            socket_connect_timeout=1,
-            socket_timeout=1
-        )
-        if r.ping():
-            return {'status': 'healthy', 'redis': 'connected', 'timestamp': time.time()}, 200
-    except:
-        pass
-    return {'status': 'unhealthy', 'redis': 'disconnected', 'timestamp': time.time()}, 500
-
-@app.route('/info')
-def info():
+    redis_ok = check_redis_connection()
     return {
-        'hostname': socket.gethostname(),
-        'ip': socket.gethostbyname(socket.gethostname()),
-        'pod': os.environ.get('HOSTNAME', 'unknown'),
-        'timestamp': time.time()
-    }
-
-@app.route('/test-redis')
-def test_redis():
-    try:
-        r = redis.Redis(
-            host=redis_host,
-            port=redis_port,
-            password=redis_password,
-            decode_responses=True,
-            socket_connect_timeout=2
-        )
-        current = r.get('page_visits') or 0
-        r.incr('test_counter')
-        test_val = r.get('test_counter')
-        
-        return {
-            'status': 'success',
-            'redis': 'connected',
-            'current_visits': current,
-            'test_counter': test_val,
-            'ping': r.ping()
-        }
-    except Exception as e:
-        return {'status': 'error', 'message': str(e)}, 500
+        "status": "healthy" if redis_ok else "degraded",
+        "version": APP_VERSION,
+        "redis": "connected" if redis_ok else "disconnected"
+    }, 200 if redis_ok else 503
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=True)
